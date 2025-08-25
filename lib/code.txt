@@ -1,0 +1,226 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart'; // <- Make sure this exists from flutterfire configure
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize Firebase with generated options
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+
+  runApp(const MyApp());
+}
+
+class MyApp extends StatelessWidget {
+  const MyApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const MaterialApp(
+      home: HomePage(),
+    );
+  }
+}
+
+class HomePage extends StatefulWidget {
+  const HomePage({super.key});
+
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
+
+class _HomePageState extends State<HomePage> {
+  final _roomController = TextEditingController();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text("WebRTC Room Example")),
+      body: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            TextField(
+              controller: _roomController,
+              decoration: const InputDecoration(
+                labelText: "Enter Room Code",
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                final roomId = _roomController.text.trim();
+                if (roomId.isEmpty) return;
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CallScreen(
+                      roomId: roomId,
+                      isCaller: true,
+                    ),
+                  ),
+                );
+              },
+              child: const Text("Create Room"),
+            ),
+            const SizedBox(height: 10),
+            ElevatedButton(
+              onPressed: () {
+                final roomId = _roomController.text.trim();
+                if (roomId.isEmpty) return;
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => CallScreen(
+                      roomId: roomId,
+                      isCaller: false,
+                    ),
+                  ),
+                );
+              },
+              child: const Text("Join Room"),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class CallScreen extends StatefulWidget {
+  final String roomId;
+  final bool isCaller;
+
+  const CallScreen({super.key, required this.roomId, required this.isCaller});
+
+  @override
+  State<CallScreen> createState() => _CallScreenState();
+}
+
+class _CallScreenState extends State<CallScreen> {
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
+  final _localRenderer = RTCVideoRenderer();
+  final _remoteRenderer = RTCVideoRenderer();
+  RTCPeerConnection? _pc;
+
+  @override
+  void initState() {
+    super.initState();
+    _initRenderers();
+    _startCall();
+  }
+
+  Future<void> _initRenderers() async {
+    await _localRenderer.initialize();
+    await _remoteRenderer.initialize();
+  }
+
+  Future<void> _startCall() async {
+    final config = {
+      "iceServers": [
+        {"urls": "stun:stun.l.google.com:19302"}
+      ]
+    };
+    _pc = await createPeerConnection(config);
+
+    // Local stream
+    final localStream = await navigator.mediaDevices.getUserMedia({
+      "video": true,
+      "audio": true,
+    });
+    _localRenderer.srcObject = localStream;
+    localStream.getTracks().forEach((track) {
+      _pc?.addTrack(track, localStream);
+    });
+
+    // Remote stream
+    _pc?.onTrack = (event) {
+      if (event.streams.isNotEmpty) {
+        _remoteRenderer.srcObject = event.streams[0];
+      }
+    };
+
+    // ICE Candidates
+    final candidatesCol = _firestore.collection("calls/${widget.roomId}/candidates");
+    _pc?.onIceCandidate = (candidate) {
+      if (candidate != null) {
+        candidatesCol.add(candidate.toMap());
+      }
+    };
+
+    final callDoc = _firestore.collection("calls").doc(widget.roomId);
+
+    if (widget.isCaller) {
+      // Caller creates offer
+      final offer = await _pc!.createOffer();
+      await _pc!.setLocalDescription(offer);
+      await callDoc.set({
+        "offer": offer.toMap(),
+      });
+
+      // Listen for answer
+      callDoc.snapshots().listen((snap) async {
+        if (snap.exists && snap.data()!.containsKey("answer")) {
+          final answer = RTCSessionDescription(
+              snap["answer"]["sdp"], snap["answer"]["type"]);
+          await _pc!.setRemoteDescription(answer);
+        }
+      });
+    } else {
+      // Callee: read offer
+      final doc = await callDoc.get();
+      if (!doc.exists || !doc.data()!.containsKey("offer")) return;
+      final offer = RTCSessionDescription(
+          doc["offer"]["sdp"], doc["offer"]["type"]);
+      await _pc!.setRemoteDescription(offer);
+
+      // Create answer
+      final answer = await _pc!.createAnswer();
+      await _pc!.setLocalDescription(answer);
+      await callDoc.update({
+        "answer": answer.toMap(),
+      });
+    }
+
+    // Listen for ICE candidates
+    candidatesCol.snapshots().listen((snapshot) {
+      for (var doc in snapshot.docChanges) {
+        if (doc.type == DocumentChangeType.added) {
+          final data = doc.doc.data()!;
+          final candidate = RTCIceCandidate(
+            data["candidate"],
+            data["sdpMid"],
+            data["sdpMLineIndex"],
+          );
+          _pc?.addCandidate(candidate);
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _localRenderer.dispose();
+    _remoteRenderer.dispose();
+    _pc?.close();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text("Room: ${widget.roomId}")),
+      body: Column(
+        children: [
+          Expanded(child: RTCVideoView(_localRenderer, mirror: true)),
+          Expanded(child: RTCVideoView(_remoteRenderer)),
+        ],
+      ),
+    );
+  }
+}

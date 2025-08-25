@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "439382054451",
+    "project_id": "calling-f35c7",
+    "storage_bucket": "calling-f35c7.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:439382054451:android:02640616f3524c9326f546",
+        "android_client_info": {
+          "package_name": "com.example.calling"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBGX6PE0SkBJA9QY7maNblDvc50l4PjhDk"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
